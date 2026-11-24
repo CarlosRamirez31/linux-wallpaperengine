@@ -31,12 +31,6 @@ using namespace WallpaperEngine::Data::Builders;
 using namespace WallpaperEngine::Data::Utils;
 
 namespace {
-glm::vec2 rotateVec2 (const glm::vec2& value, float angle) {
-    const float cosAngle = std::cos (angle);
-    const float sinAngle = std::sin (angle);
-    return { value.x * cosAngle - value.y * sinAngle, value.x * sinAngle + value.y * cosAngle };
-}
-
 bool isMagentaNeonTint (const glm::vec3& color) { return color.r > 0.55f && color.g < 0.25f && color.b > 0.45f; }
 
 std::optional<glm::vec3> findMagentaCompositeTint (const Image& image, const std::vector<int>& skippedEffectIds) {
@@ -71,11 +65,69 @@ std::optional<glm::vec3> findMagentaCompositeTint (const Image& image, const std
     return std::nullopt;
 }
 
+glm::vec4 puppetCanvasBounds (const std::vector<float>& positions, const glm::vec2& size) {
+    glm::vec4 bounds (0.0f, 0.0f, size.x, size.y);
+    for (size_t i = 0; i + 2 < positions.size (); i += 3) {
+        const float x = size.x * 0.5f + positions[i];
+        const float y = size.y * 0.5f - positions[i + 1];
+        bounds.x = std::min (bounds.x, std::floor (x));
+        bounds.y = std::min (bounds.y, std::floor (y));
+        bounds.z = std::max (bounds.z, std::ceil (x));
+        bounds.w = std::max (bounds.w, std::ceil (y));
+    }
+    return bounds;
+}
+
 struct PuppetMeshBlock {
     size_t headerOffset = 0;
     uint32_t vertexBytes = 0;
     uint32_t indexBytes = 0;
 };
+
+// MDLS v2 stores both atlas bind transforms and the assembled rest pose.
+// Apply the rest pose before rendering older, atlas-packed puppet meshes.
+std::vector<glm::mat4> legacyRestSkin (const std::vector<char>& data, size_t offset) {
+    size_t cursor = offset + 13;
+    auto read = [&] (void* out, size_t bytes) {
+        if (cursor > data.size () || bytes > data.size () - cursor)
+            throw std::runtime_error ("Truncated puppet skeleton");
+        std::memcpy (out, data.data () + cursor, bytes);
+        cursor += bytes;
+    };
+    auto word = [&] () { uint32_t v; read (&v, 4); return v; };
+    auto string = [&] () {
+        char c;
+        do { read (&c, 1); } while (c != 0);
+    };
+    uint16_t count, flags;
+    read (&count, 2); read (&flags, 2);
+    if (count == 0 || count > 4096) throw std::runtime_error ("Invalid puppet bone count");
+    std::vector<uint32_t> parents (count);
+    std::vector<glm::mat4> bind (count), rest (count), skin (count);
+    for (size_t i = 0; i < count; ++i) {
+        string (); word ();
+        parents[i] = word ();
+        if (parents[i] != UINT32_MAX && parents[i] >= i)
+            throw std::runtime_error ("Invalid puppet bone parent");
+        if (word () != 64) throw std::runtime_error ("Invalid puppet bone matrix size");
+        read (&bind[i][0][0], 64);
+        string ();
+    }
+    uint16_t reserved; uint8_t hasRest;
+    read (&reserved, 2); read (&hasRest, 1);
+    for (size_t i = 0; i < count; ++i) {
+        if (hasRest) read (&rest[i][0][0], 64);
+        else rest[i] = bind[i];
+        if (parents[i] != UINT32_MAX) {
+            bind[i] = bind[parents[i]] * bind[i];
+            rest[i] = rest[parents[i]] * rest[i];
+        }
+        if (!std::isfinite (glm::determinant (bind[i])) || std::abs (glm::determinant (bind[i])) < 1e-8f)
+            throw std::runtime_error ("Invalid puppet bind matrix");
+        skin[i] = rest[i] * glm::inverse (bind[i]);
+    }
+    return skin;
+}
 
 std::optional<PuppetMeshBlock> findPuppetMeshBlock (
     const BinaryReader& reader, size_t markerSize, size_t mdlsOffset, size_t meshHeaderSize, size_t vertexStride
@@ -106,65 +158,6 @@ std::optional<PuppetMeshBlock> findPuppetMeshBlock (
 
     return std::nullopt;
 }
-}
-
-CImage::ResolvedTransform CImage::localTransform (const Object& object) {
-    glm::vec3 origin = object.origin->value->getVec3 ();
-    glm::vec3 scale = glm::vec3 (1.0f);
-    float angle = 0.0f;
-
-    if (object.is<Image> ()) {
-	const auto* image = object.as<Image> ();
-	scale = image->scale->value->getVec3 ();
-	angle = image->angles->value->getVec3 ().z;
-    } else if (object.is<Text> ()) {
-	const auto* text = object.as<Text> ();
-	scale = text->scale->value->getVec3 ();
-    } else {
-	scale = object.groupScale->value->getVec3 ();
-	angle = object.groupAngles->value->getVec3 ().z;
-    }
-
-    return { origin, scale, angle };
-}
-
-CImage::ResolvedTransform CImage::resolveTransform (const Object& object) const {
-    constexpr int kMaxParentDepth = 32;
-
-    // Walk up the parent chain leaf-first, bounded by kMaxParentDepth to guard
-    // against cycles. chain[0] is the requested object; the last entry is the root.
-    const Object* chain[kMaxParentDepth + 1];
-    int count = 0;
-    const Object* current = &object;
-    chain[count++] = current;
-
-    while (current->parent.has_value ()) {
-	if (count > kMaxParentDepth) {
-	    sLog.error ("Parent transform chain is too deep; possible cycle at object id=", current->id);
-	    break;
-	}
-	const auto* parentObject = this->getScene ().getObject (current->parent.value ());
-	if (parentObject == nullptr) {
-	    break;
-	}
-	current = &parentObject->getObject ();
-	chain[count++] = current;
-    }
-
-    // Accumulate top-down: the root's local transform is already its resolved
-    // transform, then fold each child onto its already-resolved parent.
-    ResolvedTransform resolved = localTransform (*chain[count - 1]);
-    for (int i = count - 2; i >= 0; --i) {
-	ResolvedTransform local = localTransform (*chain[i]);
-	const glm::vec2 offset
-	    = rotateVec2 ({ local.origin.x * resolved.scale.x, local.origin.y * resolved.scale.y }, resolved.angle);
-	local.origin.x = resolved.origin.x + offset.x;
-	local.origin.y = resolved.origin.y + offset.y;
-	local.origin.z = resolved.origin.z + local.origin.z * resolved.scale.z;
-	resolved = { local.origin, local.scale * resolved.scale, local.angle + resolved.angle };
-    }
-
-    return resolved;
 }
 
 CImage::CImage (Wallpapers::CScene& scene, const Image& image) :
@@ -230,6 +223,13 @@ CImage::CImage (Wallpapers::CScene& scene, const Image& image) :
 	// TODO: CHANGE ALIGNMENT TOO?
     }
     this->m_size = size;
+    this->m_hasPuppetMesh = this->loadPuppetMesh (size);
+    if (this->m_hasPuppetMesh && image.size.x > 0 && image.size.y > 0) {
+        const auto bounds = puppetCanvasBounds (m_puppetRawPositions, image.size);
+        m_size = {bounds.z - bounds.x, bounds.w - bounds.y};
+        size = this->resolveGeometrySize (scene_width, scene_height, origin);
+        this->updatePuppetPositionBuffer (size);
+    }
 
     glm::vec2 scaledSize = size * glm::vec2 (scale);
 
@@ -372,8 +372,6 @@ CImage::CImage (Wallpapers::CScene& scene, const Image& image) :
     glBindBuffer (GL_ARRAY_BUFFER, this->m_texcoordPass);
     glBufferData (GL_ARRAY_BUFFER, sizeof (texcoordPass), texcoordPass, GL_STATIC_DRAW);
 
-    this->m_hasPuppetMesh = this->loadPuppetMesh (size);
-
     // compute the center of the image in scene space for rotation
     this->m_sceneCenter
 	= glm::vec3 ((this->m_pos.x + this->m_pos.z) / 2.0f, (this->m_pos.y + this->m_pos.w) / 2.0f, 0.0f);
@@ -433,13 +431,14 @@ bool CImage::loadPuppetMesh (const glm::vec2& size) {
 
 	constexpr size_t markerSize = 9;
 	constexpr size_t meshHeaderSize = sizeof (uint32_t) * 2;
-	constexpr size_t vertexStride = 80;
+	const bool legacyMesh = data.size () >= 8 && std::memcmp (data.data (), "MDLV0016", 8) == 0;
+	const size_t vertexStride = legacyMesh ? 52 : 80;
 	constexpr size_t positionOffset = 0;
-	constexpr size_t uvOffset = 72;
+	const size_t uvOffset = legacyMesh ? 44 : 72;
 
 	const std::string puppetVersion
 	    = data.size () >= markerSize ? std::string (data.data (), strlen ("MDLV0021")) : "";
-	if (puppetVersion != "MDLV0021" && puppetVersion != "MDLV0023") {
+	if (!legacyMesh && puppetVersion != "MDLV0021" && puppetVersion != "MDLV0023") {
 	    sLog.error ("Unsupported puppet model header ", puppetVersion, " in ", *this->getImage ().model->puppet);
 	    return false;
 	}
@@ -468,6 +467,10 @@ bool CImage::loadPuppetMesh (const glm::vec2& size) {
 	const size_t indexCount = meshBlock->indexBytes / sizeof (uint16_t);
 	std::vector<GLfloat> texcoords;
 	std::vector<GLushort> indices;
+        const auto restSkin = legacyMesh && mdlsOffset + 9 <= data.size ()
+            && std::memcmp (data.data () + mdlsOffset, "MDLS0002", 8) == 0
+            ? legacyRestSkin (data, mdlsOffset) : std::vector<glm::mat4> {};
+
 
 	this->m_puppetRawPositions.clear ();
 	this->m_puppetRawPositions.reserve (vertexCount * 3);
@@ -484,9 +487,25 @@ bool CImage::loadPuppetMesh (const glm::vec2& size) {
 	    const float u = reader.nextFloat ();
 	    const float v = reader.nextFloat ();
 
-	    this->m_puppetRawPositions.push_back (x);
-	    this->m_puppetRawPositions.push_back (y);
-	    this->m_puppetRawPositions.push_back (z);
+            glm::vec4 position (x, y, z, 1.0f);
+            if (!restSkin.empty ()) {
+                glm::vec4 assembled (0.0f);
+                float totalWeight = 0.0f;
+                for (size_t bone = 0; bone < 4; ++bone) {
+                    uint32_t boneIndex; float weight;
+                    std::memcpy (&boneIndex, data.data () + vertexOffset + 12 + bone * 4, 4);
+                    std::memcpy (&weight, data.data () + vertexOffset + 28 + bone * 4, 4);
+                    if (!std::isfinite (weight) || weight < 0.0f) throw std::runtime_error ("Invalid puppet weight");
+                    if (weight == 0.0f) continue;
+                    if (boneIndex >= restSkin.size ()) throw std::runtime_error ("Invalid puppet bone index");
+                    assembled += weight * (restSkin[boneIndex] * position);
+                    totalWeight += weight;
+                }
+                if (totalWeight > 0.0f) position = assembled / totalWeight;
+            }
+	    this->m_puppetRawPositions.push_back (position.x);
+	    this->m_puppetRawPositions.push_back (position.y);
+	    this->m_puppetRawPositions.push_back (position.z);
 	    texcoords.push_back (u);
 	    texcoords.push_back (v);
 	}
@@ -530,11 +549,13 @@ void CImage::updatePuppetPositionBuffer (const glm::vec2& size) {
 	return;
     }
 
+    const glm::vec2 originalSize = m_image.size.x > 0 && m_image.size.y > 0 ? m_image.size : size;
+    const auto bounds = puppetCanvasBounds (m_puppetRawPositions, originalSize);
     std::vector<GLfloat> positions;
     positions.reserve (this->m_puppetRawPositions.size ());
     for (size_t index = 0; index + 2 < this->m_puppetRawPositions.size (); index += 3) {
-	positions.push_back (size.x / 2.0f + this->m_puppetRawPositions[index]);
-	positions.push_back (size.y / 2.0f - this->m_puppetRawPositions[index + 1]);
+	positions.push_back (originalSize.x / 2.0f + this->m_puppetRawPositions[index] - bounds.x);
+	positions.push_back (originalSize.y / 2.0f - this->m_puppetRawPositions[index + 1] - bounds.y);
 	positions.push_back (this->m_puppetRawPositions[index + 2]);
     }
 
@@ -677,10 +698,6 @@ void CImage::setup () {
 			continue;
 		    }
 
-		    if ((*curEffect)->command != Command_Copy) {
-			sLog.error ("Only copy command is supported for pass without material");
-			continue;
-		    }
 
 		    auto virtualPass
 			= std::make_unique<MaterialPass> (MaterialPass { .blending = BlendingMode_Normal,
@@ -698,6 +715,12 @@ void CImage::setup () {
 		    this->m_passes.push_back (new CPass (
 			*this, fboProvider, config, std::nullopt, std::nullopt, (*curEffect)->target.value ()
 		    ));
+                    if ((*curEffect)->command == Command_Swap) {
+                        const auto source = fboProvider->find (*(*curEffect)->source);
+                        const auto target = fboProvider->find (*(*curEffect)->target);
+                        if (!source || !target) throw std::runtime_error ("Missing swap effect buffer");
+                        this->m_passes.back ()->setCommand ([source, target] () { source->swapStorage (*target); });
+                    }
 		} else {
 		    for (auto& pass : (*curEffect)->material.value ()->passes) {
 			const auto override = curOverride != endOverride
@@ -963,6 +986,18 @@ const glm::vec3& CImage::getCompositeColor () const { return this->m_image.color
 
 glm::vec2 CImage::resolveGeometrySize (float sceneWidth, float sceneHeight, glm::vec3& origin) const {
     glm::vec2 size = this->getSize ();
+    if (m_hasPuppetMesh && m_image.size.x > 0 && m_image.size.y > 0) {
+        const auto bounds = puppetCanvasBounds (m_puppetRawPositions, m_image.size);
+        const auto scale = resolveTransform (m_image).scale;
+        glm::vec2 shift (bounds.x + size.x * 0.5f - m_image.size.x * 0.5f,
+                         -(bounds.y + size.y * 0.5f - m_image.size.y * 0.5f));
+        if (m_image.alignment.find ("bottom") != std::string::npos) shift.y -= (size.y - m_image.size.y) * 0.5f;
+        else if (m_image.alignment.find ("top") != std::string::npos) shift.y += (size.y - m_image.size.y) * 0.5f;
+        if (m_image.alignment.find ("left") != std::string::npos) shift.x -= (size.x - m_image.size.x) * 0.5f;
+        else if (m_image.alignment.find ("right") != std::string::npos) shift.x += (size.x - m_image.size.x) * 0.5f;
+        origin.x += shift.x * scale.x;
+        origin.y += shift.y * scale.y;
+    }
 
     if ((size.x == 0.0f || size.y == 0.0f) && this->m_texture != nullptr) {
 	size.x = static_cast<float> (this->m_texture->getRealWidth ());

@@ -5,6 +5,8 @@
 #include "WallpaperEngine/WebBrowser/CEF/WPSchemeHandlerFactory.h"
 
 #include "WallpaperEngine/Data/Model/Project.h"
+#include "WallpaperEngine/Data/Model/Property.h"
+#include <nlohmann/json.hpp>
 #include "WallpaperEngine/Data/Model/Wallpaper.h"
 
 using namespace WallpaperEngine::Render;
@@ -27,9 +29,34 @@ CWeb::CWeb (
 
     CefBrowserSettings browserSettings;
     // documentaion says that 60 fps is maximum value
-    browserSettings.windowless_frame_rate = std::max (60, context.getApp ().getContext ().settings.render.maximumFPS);
+    browserSettings.windowless_frame_rate = std::clamp (context.getApp ().getContext ().settings.render.maximumFPS, 1, 60);
 
-    this->m_client = new WebBrowser::CEF::BrowserClient (m_renderHandler);
+    // Web projects depend on the initial property event supplied by Wallpaper Engine.
+    nlohmann::json properties = nlohmann::json::object ();
+    for (const auto& [name, property] : this->getWeb ().project.properties) {
+        nlohmann::json value = property->toString ();
+        using Value = WallpaperEngine::Data::Model::DynamicValue;
+        switch (property->getType ()) {
+            case Value::Boolean: value = property->getBool (); break;
+            case Value::Float: value = property->getFloat (); break;
+            case Value::Int: value = property->getInt (); break;
+            case Value::Vec3:
+            case Value::Vec4: {
+                const auto color = property->getVec3 ();
+                value = std::to_string (color.x) + " " + std::to_string (color.y) + " " + std::to_string (color.z);
+                break;
+            }
+            default: break;
+        }
+        properties[name] = { { "value", value } };
+    }
+    const std::string initialization =
+        "(()=>{let tries=0;function init(){const p=window.wallpaperPropertyListener;"
+        "if(!p){if(tries++<50)setTimeout(init,100);return;}"
+        "if(p.applyGeneralProperties)p.applyGeneralProperties({fps:"
+        + std::to_string (browserSettings.windowless_frame_rate) + "});"
+        "if(p.applyUserProperties)p.applyUserProperties(" + properties.dump () + ");}init();})();";
+    this->m_client = new WebBrowser::CEF::BrowserClient (m_renderHandler, initialization);
     // use the custom scheme for the wallpaper's files
     const std::string htmlURL = WPSchemeHandlerFactory::generateSchemeName (this->getWeb ().project.workshopId)
 	+ "://root/" + this->getWeb ().filename;

@@ -14,6 +14,7 @@ public:
 	uint32_t realHeight, uint32_t textureWidth, uint32_t textureHeight
     );
     ~CFBO () override;
+    void swapStorage (CFBO& other);
 
     [[nodiscard]] const std::string& getName () const;
     [[nodiscard]] const float& getScale () const;

@@ -303,6 +303,7 @@ ScriptEngine& CScene::getScriptEngine () const { return *this->m_scriptEngine; }
 Camera& CScene::getCamera () const { return *this->m_camera; }
 
 void CScene::renderFrame (const glm::ivec4& viewport) {
+    m_frameTime = glm::clamp (g_Time - g_TimeLast, 0.0f, 0.1f);
     // ensure the virtual mouse position is up to date
     this->updateMouse (viewport);
 
@@ -325,7 +326,7 @@ void CScene::renderFrame (const glm::ivec4& viewport) {
 
     // update main textures for images
     for (const auto& cur : this->m_objectsByRenderOrder) {
-	if (!cur->is<Objects::CImage> ()) {
+	if (!cur->isVisible () || !cur->is<Objects::CImage> ()) {
 	    continue;
 	}
 
@@ -362,13 +363,17 @@ void CScene::renderFrame (const glm::ivec4& viewport) {
 	    continue;
 	}
 
-	cur->render ();
+	if (cur->isVisible ()) cur->render ();
     }
 }
 
 void CScene::updateMouse (const glm::ivec4& viewport) {
     // update virtual mouse position first
     const glm::dvec2 position = this->getContext ().getInputContext ().getMouseInput ().position ();
+
+    const auto& mouse = this->getContext ().getInputContext ().getMouseInput ();
+    m_pointerState = {0.0f, 0.0f, mouse.leftClick () == Input::MouseClickStatus::Clicked ? 1.0f : 0.0f,
+                      mouse.rightClick () == Input::MouseClickStatus::Clicked ? 1.0f : 0.0f};
 
     // rollover the position to the last
     this->m_mousePositionLast = this->m_mousePosition;

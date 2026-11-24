@@ -90,16 +90,20 @@ PropertySharedPtr PropertyParser::parseColor (const JSON& it, const std::string&
 }
 
 PropertySharedPtr PropertyParser::parseBoolean (const JSON& it, const std::string& name) {
+    // Some bundled Wallpaper Engine projects serialize these values as strings.
+    const auto value = it.optional ("value");
+    const bool enabled = value && (value->is_string () ? value->get<std::string> () == "true" : value->get<bool> ());
     return std::make_shared<PropertyBoolean> (
 	PropertyData {
 	    .name = name,
 	    .text = it.optional<std::string> ("text", ""),
 	},
-	it.optional ("value", false)
+	enabled
     );
 }
 
 PropertySharedPtr PropertyParser::parseSlider (const JSON& it, const std::string& name) {
+    const auto value = it.require ("value", "Property must have a value");
     return std::make_shared<PropertySlider> (
 	PropertyData {
 	    .name = name,
@@ -110,7 +114,7 @@ PropertySharedPtr PropertyParser::parseSlider (const JSON& it, const std::string
 	    .max = it.optional ("max", 0.0f),
 	    .step = it.optional ("step", 0.0f),
 	},
-	it.require ("value", "Property must have a value")
+	value.is_string () ? std::stof (value.get<std::string> ()) : value.get<float> ()
     );
 }
 

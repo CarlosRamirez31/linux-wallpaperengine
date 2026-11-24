@@ -17,7 +17,11 @@ CFBO::CFBO (
     // bind the new texture to set settings on it
     glBindTexture (GL_TEXTURE_2D, this->m_texture);
     // give OpenGL an empty image
-    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, textureWidth, textureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    const GLenum internal = format == TextureFormat_RG1616f ? GL_RG16F
+        : format == TextureFormat_R16f ? GL_R16F
+        : format == TextureFormat_RGBA16161616f ? GL_RGBA16F : GL_RGBA8;
+    const GLenum channels = format == TextureFormat_RG1616f ? GL_RG : format == TextureFormat_R16f ? GL_RED : GL_RGBA;
+    glTexImage2D (GL_TEXTURE_2D, 0, internal, textureWidth, textureHeight, 0, channels, GL_FLOAT, nullptr);
     // label stuff for debugging
 #if !NDEBUG
     glObjectLabel (GL_TEXTURE, this->m_texture, -1, this->m_name.c_str ());
@@ -134,3 +138,9 @@ void CFBO::decrementUsageCount () const { }
 void CFBO::update () const { }
 // FBOs are always ready
 bool CFBO::isReady () const { return true; }
+void CFBO::swapStorage (CFBO& other) {
+    if (m_format != other.m_format || m_resolution != other.m_resolution)
+        throw std::runtime_error ("Cannot swap effect buffers with different formats or dimensions");
+    std::swap (m_texture, other.m_texture);
+    std::swap (m_framebuffer, other.m_framebuffer);
+}

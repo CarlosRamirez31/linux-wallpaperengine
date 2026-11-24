@@ -181,14 +181,18 @@ ObjectParser::parseImage (const JSON& it, const Project& project, ObjectData bas
 
 	if (instanceTextures.has_value ()) {
 	    const auto parsed = TextureParser::parseTextureMap (*instanceTextures);
-	    firstPass.textures.insert (parsed.begin (), parsed.end ());
+	    for (const auto& [slot, texture] : parsed) {
+		firstPass.textures.insert_or_assign (slot, texture);
+	    }
 	}
 
 	const auto instanceUserTextures = instance->optional ("usertextures");
 
 	if (instanceUserTextures.has_value ()) {
 	    const auto parsed = TextureParser::parseTextureMap (*instanceUserTextures);
-	    firstPass.usertextures.insert (parsed.begin (), parsed.end ());
+	    for (const auto& [slot, texture] : parsed) {
+		firstPass.usertextures.insert_or_assign (slot, texture);
+	    }
 	}
     }
 
@@ -211,13 +215,24 @@ std::vector<ImageEffectUniquePtr> ObjectParser::parseEffects (const JSON& it, co
 
 ImageEffectUniquePtr ObjectParser::parseEffect (const JSON& it, const Project& project) {
     const auto& passsOverrides = it.optional ("passes");
-    return std::make_unique<ImageEffect> (ImageEffect {
+    auto effect = std::make_unique<ImageEffect> (ImageEffect {
 	.id = it.optional<int> ("id", -1),
 	.name = it.optional<std::string> ("name", "Effect without name"),
 	.visible = it.user ("visible", project.properties, true),
 	.passOverrides = passsOverrides.has_value () ? parseEffectPassOverrides (passsOverrides.value (), project)
 						     : std::vector<ImageEffectPassOverrideUniquePtr> {},
 	.effect = EffectParser::load (project, it.require ("file", "Image effect must have an effect")) });
+    // Effect-wide shader options apply to every material pass; per-pass overrides
+    // are merged later by CPass and retain precedence.
+    if (const auto options = it.optional ("combos"); options.has_value ()) {
+        const auto combos = parseComboMap (*options);
+        for (auto& step : effect->effect->passes) {
+            if (!step->material.has_value ()) continue;
+            for (auto& pass : step->material.value ()->passes)
+                for (const auto& [name, value] : combos) pass->combos.insert_or_assign (name, value);
+        }
+    }
+    return effect;
 }
 
 std::vector<ImageEffectPassOverrideUniquePtr>

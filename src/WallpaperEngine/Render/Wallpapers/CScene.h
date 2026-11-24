@@ -37,6 +37,8 @@ public:
     [[nodiscard]] float getDeltaTime () const;
     [[nodiscard]] float getFps () const;
 
+    const float* getFrameTimeUniform () const { return &m_frameTime; }
+    const glm::vec4* getPointerState () const { return &m_pointerState; }
     const glm::vec2* getMousePosition () const;
     const glm::vec2* getMousePositionLast () const;
     const glm::vec2* getMousePositionNormalized () const;
@@ -63,6 +65,8 @@ private:
     std::map<int, CObject*> m_objects = {};
     std::vector<CObject*> m_objectsByRenderOrder = {};
     std::vector<DynamicValue*> m_scriptedValues = {};
+    float m_frameTime = 0.0f;
+    glm::vec4 m_pointerState = {};
     glm::vec2 m_mousePosition = {};
     glm::vec2 m_mousePositionLast = {};
     glm::vec2 m_mousePositionNormalized = {};

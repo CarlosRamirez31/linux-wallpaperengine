@@ -573,6 +573,9 @@ void WallpaperApplication::takeScreenshot (const std::filesystem::path& filename
 	const int vpWidth = viewport->viewport.z - viewport->viewport.x;
 	const int vpHeight = viewport->viewport.w - viewport->viewport.y;
 
+	// Do not attribute earlier rendering errors to this readback operation.
+	while (glGetError () != GL_NO_ERROR) {}
+
 	// bind the wallpaper's FBO to read from it directly
 	// this is more reliable than the default framebuffer on some drivers (NVIDIA/Wayland)
 	glBindFramebuffer (GL_FRAMEBUFFER, wallpaper->getWallpaperFramebuffer ());
@@ -619,7 +622,7 @@ void WallpaperApplication::takeScreenshot (const std::filesystem::path& filename
     const std::string extStr = extension.string ();
 
     // Offload pixel processing and saving to a background thread to avoid hitches
-    std::thread ([captures, width, height, vflip, extStr, filename] () {
+    auto writer = std::thread ([captures, width, height, vflip, extStr, filename] () {
 	auto* bitmap = new uint8_t[width * height * 3] { 0 };
 
 	for (const auto& capture : captures) {
@@ -660,7 +663,9 @@ void WallpaperApplication::takeScreenshot (const std::filesystem::path& filename
 	}
 
 	delete[] bitmap;
-    }).detach ();
+    });
+    if (std::getenv ("BOLLOW_PREVIEW")) writer.join ();
+    else writer.detach ();
 }
 
 void WallpaperApplication::setupOutput () {
@@ -949,6 +954,8 @@ void WallpaperApplication::render () {
 
     this->takeScreenshot (this->m_context.settings.screenshot.path);
     this->m_screenShotTaken = true;
+    if (std::getenv ("BOLLOW_PREVIEW") && !std::getenv ("BOLLOW_PREVIEW_VIDEO"))
+        this->m_context.state.general.keepRunning = false;
 }
 
 void WallpaperApplication::cleanup () {

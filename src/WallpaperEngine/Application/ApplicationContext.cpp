@@ -669,7 +669,7 @@ void ApplicationContext::loadSettingsFromArgv () {
 
 	this->settings.audio.volume = std::max (0, std::min (this->settings.audio.volume, 128));
 	this->settings.screenshot.delay
-	    = std::max<uint32_t> (0, std::min<uint32_t> (this->settings.screenshot.delay, 5));
+	    = std::max<uint32_t> (0, std::min<uint32_t> (this->settings.screenshot.delay, std::getenv ("BOLLOW_PREVIEW") ? 300 : 5));
 
 	// use std::cout on this in case logging is disabled, this way it's easy to look at what is running
 	std::stringbuf buffer;

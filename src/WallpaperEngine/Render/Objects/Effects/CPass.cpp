@@ -452,6 +452,7 @@ void CPass::cleanupRenderSetup () {
 }
 
 void CPass::render () {
+    if (m_command) { m_command (); return; }
     // set the VAO for now
     glBindVertexArray (this->m_vao);
 
@@ -867,6 +868,7 @@ void CPass::setupUniforms () {
     }
     // add some external variables
     this->addUniform ("g_Time", &g_Time);
+    this->addUniform ("g_Frametime", scene.getFrameTimeUniform ());
     this->addUniform ("g_Daytime", &g_Daytime);
     // add model-view-projection matrix
     this->addUniform ("g_ModelViewProjectionMatrixInverse", &this->m_modelViewProjectionMatrixInverse);
@@ -876,6 +878,7 @@ void CPass::setupUniforms () {
     this->addUniform ("g_EffectModelMatrix", &this->m_modelMatrix);
     this->addUniform ("g_NormalModelMatrix", glm::identity<glm::mat3> ());
     this->addUniform ("g_ViewProjectionMatrix", &this->m_viewProjectionMatrix);
+    this->addUniform ("g_PointerState", scene.getPointerState ());
     this->addUniform ("g_PointerPosition", scene.getMousePosition ());
     this->addUniform ("g_PointerPositionLast", scene.getMousePositionLast ());
     this->addUniform ("g_EffectTextureProjectionMatrix", glm::mat4 (1.0));

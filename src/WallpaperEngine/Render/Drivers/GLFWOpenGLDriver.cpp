@@ -12,6 +12,11 @@
 #include <GLFW/glfw3native.h>
 
 #include <unistd.h>
+#include <cstdlib>
+#ifdef ENABLE_X11
+#include <X11/Xatom.h>
+#include <X11/extensions/shape.h>
+#endif
 
 using namespace WallpaperEngine::Render::Drivers;
 
@@ -47,11 +52,39 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
     glfwWindowHint (GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
 #endif /* DEBUG */
 
+    // Local desktop integration is opt-in; retain upstream preview behavior.
+    const bool desktop = std::getenv ("BOLLOW_DESKTOP") != nullptr;
+    if (desktop) {
+        glfwWindowHint (GLFW_FLOATING, GLFW_FALSE);
+        glfwWindowHint (GLFW_FOCUSED, GLFW_FALSE);
+        glfwWindowHint (GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    }
+
     // create window, size doesn't matter as long as we don't show it
     this->m_window = glfwCreateWindow (640, 480, windowTitle, nullptr, nullptr);
 
     if (this->m_window == nullptr) {
 	sLog.exception ("Cannot create window");
+    }
+
+#ifdef ENABLE_X11
+    if (desktop) {
+        Display* display = glfwGetX11Display ();
+        const Window window = glfwGetX11Window (this->m_window);
+        XSetWindowAttributes attributes {};
+        attributes.override_redirect = True;
+        XChangeWindowAttributes (display, window, CWOverrideRedirect, &attributes);
+        Atom type = XInternAtom (display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+        XChangeProperty (display, window, XInternAtom (display, "_NET_WM_WINDOW_TYPE", False),
+                         XA_ATOM, 32, PropModeReplace, reinterpret_cast<unsigned char*> (&type), 1);
+        // Mouse clicks pass through to Awesome's desktop bindings.
+        XShapeCombineRectangles (display, window, ShapeInput, 0, 0, nullptr, 0, ShapeSet, Unsorted);
+    }
+#endif
+
+    if (std::getenv ("BOLLOW_PREVIEW")) {
+        if (const char* pipe = std::getenv ("BOLLOW_PREVIEW_VIDEO"))
+            m_previewOutput.open (pipe, std::ios::binary);
     }
 
     // make context current, required for glew initialization
@@ -93,7 +126,14 @@ void GLFWOpenGLDriver::resizeWindow (glm::ivec4 sizeandpos) {
     glfwSetWindowSize (this->m_window, sizeandpos.z, sizeandpos.w);
 }
 
-void GLFWOpenGLDriver::showWindow () { glfwShowWindow (this->m_window); }
+void GLFWOpenGLDriver::showWindow () {
+    if (std::getenv ("BOLLOW_PREVIEW")) return;
+    glfwShowWindow (this->m_window);
+#ifdef ENABLE_X11
+    if (std::getenv ("BOLLOW_DESKTOP"))
+        XLowerWindow (glfwGetX11Display (), glfwGetX11Window (this->m_window));
+#endif
+}
 
 void GLFWOpenGLDriver::hideWindow () { glfwHideWindow (this->m_window); }
 
@@ -145,8 +185,26 @@ void GLFWOpenGLDriver::dispatchEventQueue () {
     // TODO: AS THOSE, MORE THAN LIKELY, WILL REQUIRE OF A DIFFERENT PROCESSING RATE
     // update the output with the given image
     this->m_output->updateRender ();
+    // Export only the short cached hover preview, never during desktop playback.
+    if (m_previewOutput.is_open () && m_frameCounter >= 90) {
+        const auto size = getFramebufferSize ();
+        m_previewPixels.resize (size.x * size.y * 3);
+        glPixelStorei (GL_PACK_ALIGNMENT, 1);
+        glReadPixels (0, 0, size.x, size.y, GL_RGB, GL_UNSIGNED_BYTE, m_previewPixels.data ());
+        m_previewOutput.write (reinterpret_cast<const char*> (m_previewPixels.data ()), m_previewPixels.size ());
+        if (m_frameCounter >= 209) {
+            m_previewOutput.close ();
+            m_context.state.general.keepRunning = false;
+        }
+    }
     // do buffer swapping first
     glfwSwapBuffers (this->m_window);
+    // Publish readiness only after a complete desktop frame has been presented.
+    if (m_frameCounter == 0) {
+        if (const char* ready = std::getenv ("BOLLOW_READY_FILE")) {
+            std::ofstream (ready) << "ready\n";
+        }
+    }
     // poll for events
     glfwPollEvents ();
     // increase frame counter

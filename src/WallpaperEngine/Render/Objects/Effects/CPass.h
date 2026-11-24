@@ -32,6 +32,7 @@ public:
     ~CPass ();
 
     void render ();
+    void setCommand (std::function<void ()> command) { m_command = std::move (command); }
 
     void setDestination (std::shared_ptr<const CFBO> drawTo);
     void setInput (std::shared_ptr<const TextureProvider> input);
@@ -65,6 +66,7 @@ public:
     void addUniform (const std::string& name, const glm::mat4* value);
 
 private:
+    std::function<void ()> m_command;
     struct TextureChainEntry {
 	std::shared_ptr<const TextureProvider> texture;
 	std::shared_ptr<TextureChainEntry> next;

@@ -7,6 +7,8 @@
 #include "WallpaperEngine/Render/Drivers/VideoDriver.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <fstream>
+#include <vector>
 
 namespace WallpaperEngine::Application {
 class ApplicationContext;
@@ -41,5 +43,7 @@ private:
     Output::Output* m_output = nullptr;
     GLFWwindow* m_window = nullptr;
     uint32_t m_frameCounter = 0;
+    std::ofstream m_previewOutput;
+    std::vector<uint8_t> m_previewPixels;
 };
 } // namespace WallpaperEngine::Render::Drivers

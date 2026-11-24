@@ -10,7 +10,7 @@ std::shared_ptr<CFBO> FBOProvider::create (const FBO& base, uint32_t flags, cons
     return this->m_fbos[base.name] = std::make_shared<CFBO> (
 	       base.name,
 	       // TODO: PROPERLY DETERMINE FBO FORMAT BASED ON THE STRING
-	       TextureFormat_ARGB8888, flags, base.scale, size.x / base.scale, size.y / base.scale, size.x / base.scale,
+	       (base.format == "rg1616f" ? TextureFormat_RG1616f : base.format == "r16f" ? TextureFormat_R16f : base.format == "rgba16161616f" ? TextureFormat_RGBA16161616f : TextureFormat_ARGB8888), flags, base.scale, size.x / base.scale, size.y / base.scale, size.x / base.scale,
 	       size.y / base.scale
 	   );
 }
