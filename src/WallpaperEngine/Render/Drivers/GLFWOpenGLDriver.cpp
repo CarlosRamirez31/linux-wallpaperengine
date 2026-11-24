@@ -148,6 +148,19 @@ glm::ivec2 GLFWOpenGLDriver::getFramebufferSize () const {
 uint32_t GLFWOpenGLDriver::getFrameCounter () const { return this->m_frameCounter; }
 
 void GLFWOpenGLDriver::dispatchEventQueue () {
+    // Keep the GLX client responsive while hidden. SIGSTOP can suspend it while
+    // the compositor/X server is waiting for a graphics resource or fence.
+    static bool desktopPaused = false;
+    const char* pauseFile = std::getenv ("BOLLOW_PAUSE_FILE");
+    if (m_frameCounter > 0 && pauseFile && access (pauseFile, F_OK) == 0) {
+        if (!desktopPaused) glFinish ();
+        desktopPaused = true;
+        glfwPollEvents ();
+        usleep (50000);
+        return;
+    }
+    desktopPaused = false;
+
     static float startTime, endTime, minimumTime = 1.0f / this->m_context.settings.render.maximumFPS;
     // get the start time of the frame
     startTime = this->getRenderTime ();
@@ -199,8 +212,14 @@ void GLFWOpenGLDriver::dispatchEventQueue () {
     }
     // do buffer swapping first
     glfwSwapBuffers (this->m_window);
+    // Do not queue wallpaper frames ahead of desktop input/compositing work.
+    // Include GPU completion in the existing frame budget, retaining maximumFPS.
+    if (std::getenv ("BOLLOW_DESKTOP")) glFinish ();
     // Publish readiness only after a complete desktop frame has been presented.
-    if (m_frameCounter == 0) {
+    static bool readyPublished = false;
+    const char* webPaint = std::getenv ("BOLLOW_WEB_PAINT_FILE");
+    if (!readyPublished && (!webPaint || access (webPaint, F_OK) == 0)) {
+        readyPublished = true;
         if (const char* ready = std::getenv ("BOLLOW_READY_FILE")) {
             std::ofstream (ready) << "ready\n";
         }

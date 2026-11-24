@@ -32,6 +32,7 @@ public:
     IMPLEMENT_REFCOUNTING (RenderHandler);
 
 private:
+    bool m_painted = false;
     WallpaperEngine::Render::Wallpapers::CWeb* m_webdata = nullptr;
 
     [[nodiscard]] int getWidth () const;

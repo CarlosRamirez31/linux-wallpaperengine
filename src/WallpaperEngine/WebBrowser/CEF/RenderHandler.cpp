@@ -1,4 +1,6 @@
 #include "RenderHandler.h"
+#include <cstdlib>
+#include <fstream>
 
 using namespace WallpaperEngine::WebBrowser::CEF;
 
@@ -18,6 +20,12 @@ void RenderHandler::OnPaint (
     glBindTexture (GL_TEXTURE_2D, this->texture ());
     glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, buffer);
     glBindTexture (GL_TEXTURE_2D, 0);
+    if (!m_painted) {
+        if (const char* path = std::getenv ("BOLLOW_WEB_PAINT_FILE")) {
+            std::ofstream (path) << "painted\n";
+        }
+        m_painted = true;
+    }
 }
 
 int RenderHandler::getWidth () const { return this->m_webdata->getWidth (); }
